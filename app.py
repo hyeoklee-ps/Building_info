@@ -211,10 +211,87 @@ if not kakao_key:
         kakao_key = st.text_input('카카오 REST API 키', type='password', key='kakao_key')
         st.caption('영구 저장: Streamlit Cloud → Settings → Secrets에 KAKAO_REST_API_KEY를 등록하세요.')
 
-search_mode = st.radio('검색 방식', ['상호명 검색', '주소 검색'], horizontal=True, index=0 if kakao_key else 1)
+def place_floor(place):
+    """카카오 장소검색 기본 응답에는 층수 전용 필드가 없다.
+    주소나 상호에 층수가 명시된 경우에만 표시하며, 추정하지 않는다."""
+    texts = [str(place.get(k) or '') for k in
+             ('road_address_name', 'address_name', 'place_name')]
+    for source in texts:
+        match = re.search(r'(?<!\\d)(지하\\s*\\d+|B\\s*\\d+|\\d+)\\s*층(?!\\d)', source, re.I)
+        if match:
+            return re.sub(r'\\s+', '', match.group(0))
+    return '층수 미확인'
+
+
+def place_label(place):
+    addr = place.get('road_address_name') or place.get('address_name') or ''
+    return f"{place.get('place_name','')} · {addr} · {place_floor(place)}"
+
+
+def resolve_place(place):
+    if not juso_key:
+        st.error('도로명주소 API 키를 먼저 설정해주세요.')
+        return
+    target = place.get('road_address_name') or place.get('address_name') or ''
+    if not target:
+        st.warning('해당 장소에는 주소가 없습니다. 주소 검색을 이용하세요.')
+        return
+    try:
+        with st.spinner('장소 주소를 건축물 주소로 변환하고 있습니다…'):
+            found = search_address(target, juso_key)
+            if not found and place.get('address_name') and place['address_name'] != target:
+                found = search_address(place['address_name'], juso_key)
+        st.session_state['addresses'] = found
+        if not found:
+            st.warning('건축물 주소로 연결되지 않았습니다. 주소 검색을 이용하세요.')
+    except Exception as exc:
+        st.error(str(exc))
+
+
+def fetch_building(address):
+    if not bld_key:
+        st.error('건축HUB API 인증키를 먼저 설정해주세요.')
+        return
+    st.session_state['picked'] = address
+    st.session_state.pop('results', None)
+    try:
+        with st.spinner('건축물대장 정보를 조회하고 있습니다…'):
+            code = code_from_address(address)
+            floors = building_info('getBrFlrOulnInfo', code, bld_key)
+            titles = building_info('getBrTitleInfo', code, bld_key)
+            try:
+                ownership = building_info('getBrExposPubuseAreaInfo', code, bld_key)
+            except Exception:
+                ownership = []
+            extra = {}
+            for name, endpoint in [
+                ('recap','getBrRecapTitleInfo'),
+                ('units','getBrExposInfo'),
+                ('zones','getBrJijiguInfo'),
+                ('prices','getBrHsprcInfo'),
+            ]:
+                try:
+                    extra[name] = building_info(endpoint, code, bld_key)
+                except Exception as exc:
+                    extra[name] = []
+                    st.warning(f'{name} 조회 실패: {exc}')
+            st.session_state['results'] = {
+                'floors': floors, 'titles': titles, 'ownership': ownership,
+                'code': code, **extra
+            }
+    except Exception as exc:
+        st.error(str(exc))
+
+
+search_mode = st.radio('검색 방식', ['상호명 검색', '주소 검색'],
+                       horizontal=True, index=0 if kakao_key else 1)
 with st.form('building_search'):
-    keyword = st.text_input('상호명 또는 주소', placeholder='예: 더페이스성형외과' if search_mode == '상호명 검색' else '예: 부산진구 부전로66번길 22')
+    keyword = st.text_input(
+        '상호명 또는 주소',
+        placeholder='예: 더페이스성형외과' if search_mode == '상호명 검색'
+        else '예: 부산진구 부전로66번길 22')
     submitted = st.form_submit_button('검색', type='primary', use_container_width=True)
+
 if submitted:
     for state_key in ('picked', 'addresses', 'places', 'results'):
         st.session_state.pop(state_key, None)
@@ -228,7 +305,7 @@ if submitted:
                 with st.spinner('상호명을 검색하고 있습니다…'):
                     st.session_state['places'] = search_places(keyword.strip(), kakao_key)
                 if not st.session_state['places']:
-                    st.warning('장소 검색 결과가 없습니다. 지역명을 포함하거나 주소로 검색해 보세요.')
+                    st.warning('장소 검색 결과가 없습니다. 지역명을 추가하거나 주소 검색을 이용하세요.')
             except Exception as exc:
                 st.error(str(exc))
     elif not juso_key:
@@ -241,64 +318,41 @@ if submitted:
             st.error(str(exc))
 
 places = st.session_state.get('places') or []
-if places:
+if len(places) == 1 and submitted:
+    # 상호명 한 건이면 추가 버튼 없이 바로 주소를 변환한다.
+    resolve_place(places[0])
+elif len(places) > 1:
     st.subheader('1. 상호명 검색 결과')
-    idx = st.selectbox('정확한 지점을 선택하세요.', range(len(places)),
-        format_func=lambda i: f"{places[i].get('place_name','')} · {places[i].get('road_address_name') or places[i].get('address_name','')}")
-    place = places[idx]
-    st.caption(f"선택 장소: {place.get('place_name','')} | {place.get('category_name','')} | 지번: {place.get('address_name','')}")
-    if st.button('이 장소의 건축물대장 찾기', type='primary', use_container_width=True):
-        if not juso_key:
-            st.error('도로명주소 API 키가 필요합니다.')
-        else:
-            target = place.get('road_address_name') or place.get('address_name') or ''
-            try:
-                with st.spinner('장소 주소를 건축물 주소로 변환하고 있습니다…'):
-                    found = search_address(target, juso_key)
-                    if not found and place.get('address_name') and place.get('address_name') != target:
-                        found = search_address(place['address_name'], juso_key)
-                    st.session_state['addresses'] = found
-                if not found:
-                    st.warning('장소는 찾았지만 건축물 주소로 연결되지 않았습니다. 주소 검색을 이용하세요.')
-            except Exception as exc:
-                st.error(str(exc))
+    idx = st.selectbox('동일·유사 상호가 여러 개 있습니다. 정확한 지점을 선택하세요.',
+                       range(len(places)), format_func=lambda i: place_label(places[i]))
+    chosen = places[idx]
+    st.caption(f"선택 장소: {chosen.get('place_name','')} | "
+               f"{chosen.get('category_name','')} | {place_floor(chosen)} | "
+               f"지번: {chosen.get('address_name','')}")
+    if st.button('이 장소 선택', type='primary', use_container_width=True):
+        st.session_state.pop('results', None)
+        st.session_state.pop('addresses', None)
+        resolve_place(chosen)
+elif len(places) == 1:
+    st.caption(f"검색된 장소: {place_label(places[0])}")
 
 addresses = st.session_state.get('addresses') or []
-if addresses:
+if len(addresses) == 1:
+    # 주소 검색이든 장소 검색이든 단일 건물이면 바로 조회한다.
+    address = addresses[0]
+    st.caption(f"조회 건물: {address.get('roadAddrPart1','')} · "
+               f"지번 {address.get('jibunAddr','')}")
+    if not st.session_state.get('results'):
+        fetch_building(address)
+elif len(addresses) > 1:
     st.subheader('2. 건물 주소 선택')
-    picked = st.selectbox('장소명과 실제 건물 주소를 대조해 선택하세요.', range(len(addresses)),
-        format_func=lambda i: f"{addresses[i].get('roadAddrPart1', '')} · {addresses[i].get('bdNm') or '건물명 없음'} | 지번 {addresses[i].get('jibunAddr', '')}")
+    picked = st.selectbox('검색된 건물이 여러 개입니다. 주소를 확인하세요.',
+        range(len(addresses)),
+        format_func=lambda i: f"{addresses[i].get('roadAddrPart1', '')} · "
+        f"{addresses[i].get('bdNm') or '건물명 없음'} | "
+        f"지번 {addresses[i].get('jibunAddr', '')}")
     if st.button('건축물대장 조회', type='primary', use_container_width=True):
-        if not bld_key:
-            st.error('건축HUB API 인증키가 필요합니다.')
-        else:
-            st.session_state['picked'] = addresses[picked]
-            st.session_state.pop('results', None)
-            try:
-                with st.spinner('건축물대장 층별 정보를 조회하고 있습니다…'):
-                    code = code_from_address(addresses[picked])
-                    floors = building_info('getBrFlrOulnInfo', code, bld_key)
-                    titles = building_info('getBrTitleInfo', code, bld_key)
-                    try:
-                        ownership = building_info('getBrExposPubuseAreaInfo', code, bld_key)
-                    except Exception:
-                        ownership = []
-                    extra = {}
-                    for name, endpoint in [
-                        ('recap','getBrRecapTitleInfo'),
-                        ('units','getBrExposInfo'),
-                        ('zones','getBrJijiguInfo'),
-                        ('prices','getBrHsprcInfo'),
-                    ]:
-                        try:
-                            extra[name] = building_info(endpoint, code, bld_key)
-                        except Exception as exc:
-                            extra[name] = []
-                            st.warning(f'{name} 조회 실패: {exc}')
-                    st.session_state['results'] = {'floors': floors, 'titles': titles,
-                        'ownership': ownership, 'code': code, **extra}
-            except Exception as exc:
-                st.error(str(exc))
+        fetch_building(addresses[picked])
 
 results = st.session_state.get('results')
 if results:
