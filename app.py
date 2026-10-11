@@ -64,6 +64,27 @@ def search_address(keyword, key):
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
+def search_places(keyword, key):
+    response = api_json_with_headers(
+        'https://dapi.kakao.com/v2/local/search/keyword.json',
+        {'query': keyword, 'size': 15},
+        {'Authorization': 'KakaoAK ' + key.strip()})
+    return response.get('documents') or []
+
+
+def api_json_with_headers(url, params, headers):
+    try:
+        response = requests.get(url, params=params, headers=headers, timeout=20)
+        response.raise_for_status()
+        return response.json()
+    except requests.HTTPError as exc:
+        status = exc.response.status_code if exc.response is not None else '?'
+        raise RuntimeError(f'장소 검색 API 오류 (HTTP {status}): 카카오 REST API 키와 로컬 API 활성화 여부를 확인하세요.') from exc
+    except (requests.RequestException, ValueError) as exc:
+        raise RuntimeError(f'장소 검색 연결 실패: {exc}') from exc
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
 def building_info(endpoint, code, key):
     params = {'serviceKey': normalize_key(key), 'sigunguCd': code['sigunguCd'],
               'bjdongCd': code['bjdongCd'], 'platGbCd': code['platGbCd'],
@@ -184,31 +205,72 @@ else:
         st.caption('일시 입력한 키는 앱을 다시 열면 유지되지 않습니다. 영구 설정은 Streamlit Cloud 앱 Settings → Secrets에서 등록하세요.')
         st.markdown('[주소 API](https://business.juso.go.kr/) · [건축HUB API](https://www.data.go.kr/data/15134735/openapi.do)')
 
-with st.form('address_search'):
-    keyword = st.text_input('건물 주소', placeholder='예: 부산광역시 부산진구 중앙대로 708')
-    submitted = st.form_submit_button('주소 검색', type='primary', use_container_width=True)
+kakao_key = saved_api_key('KAKAO_REST_API_KEY')
+if not kakao_key:
+    with st.expander('상호명 검색 활성화 (카카오 REST API 키)', expanded=False):
+        kakao_key = st.text_input('카카오 REST API 키', type='password', key='kakao_key')
+        st.caption('영구 저장: Streamlit Cloud → Settings → Secrets에 KAKAO_REST_API_KEY를 등록하세요.')
+
+search_mode = st.radio('검색 방식', ['상호명 검색', '주소 검색'], horizontal=True, index=0 if kakao_key else 1)
+with st.form('building_search'):
+    keyword = st.text_input('상호명 또는 주소', placeholder='예: 더페이스성형외과' if search_mode == '상호명 검색' else '예: 부산진구 부전로66번길 22')
+    submitted = st.form_submit_button('검색', type='primary', use_container_width=True)
 if submitted:
-    st.session_state.pop('picked', None)
-    if not juso_key:
-        st.error('먼저 왼쪽에 도로명주소 API 승인키를 입력해주세요.')
-    elif len(keyword.strip()) < 2:
-        st.warning('검색할 주소를 입력해주세요.')
+    for state_key in ('picked', 'addresses', 'places', 'results'):
+        st.session_state.pop(state_key, None)
+    if len(keyword.strip()) < 2:
+        st.warning('검색어를 두 글자 이상 입력해주세요.')
+    elif search_mode == '상호명 검색':
+        if not kakao_key:
+            st.error('상호명 검색에는 카카오 REST API 키가 필요합니다.')
+        else:
+            try:
+                with st.spinner('상호명을 검색하고 있습니다…'):
+                    st.session_state['places'] = search_places(keyword.strip(), kakao_key)
+                if not st.session_state['places']:
+                    st.warning('장소 검색 결과가 없습니다. 지역명을 포함하거나 주소로 검색해 보세요.')
+            except Exception as exc:
+                st.error(str(exc))
+    elif not juso_key:
+        st.error('도로명주소 API 키를 먼저 설정해주세요.')
     else:
         try:
             with st.spinner('주소를 찾고 있습니다…'):
                 st.session_state['addresses'] = search_address(keyword.strip(), juso_key)
         except Exception as exc:
-            st.session_state['addresses'] = []
             st.error(str(exc))
 
-addresses = st.session_state.get('addresses', [])
+places = st.session_state.get('places') or []
+if places:
+    st.subheader('1. 상호명 검색 결과')
+    idx = st.selectbox('정확한 지점을 선택하세요.', range(len(places)),
+        format_func=lambda i: f"{places[i].get('place_name','')} · {places[i].get('road_address_name') or places[i].get('address_name','')}")
+    place = places[idx]
+    st.caption(f"선택 장소: {place.get('place_name','')} | {place.get('category_name','')} | 지번: {place.get('address_name','')}")
+    if st.button('이 장소의 건축물대장 찾기', type='primary', use_container_width=True):
+        if not juso_key:
+            st.error('도로명주소 API 키가 필요합니다.')
+        else:
+            target = place.get('road_address_name') or place.get('address_name') or ''
+            try:
+                with st.spinner('장소 주소를 건축물 주소로 변환하고 있습니다…'):
+                    found = search_address(target, juso_key)
+                    if not found and place.get('address_name') and place.get('address_name') != target:
+                        found = search_address(place['address_name'], juso_key)
+                    st.session_state['addresses'] = found
+                if not found:
+                    st.warning('장소는 찾았지만 건축물 주소로 연결되지 않았습니다. 주소 검색을 이용하세요.')
+            except Exception as exc:
+                st.error(str(exc))
+
+addresses = st.session_state.get('addresses') or []
 if addresses:
-    st.subheader('1. 건물 선택')
-    picked = st.selectbox('같은 도로명에 여러 건물이 있을 수 있습니다. 정확한 주소를 골라주세요.', range(len(addresses)),
+    st.subheader('2. 건물 주소 선택')
+    picked = st.selectbox('장소명과 실제 건물 주소를 대조해 선택하세요.', range(len(addresses)),
         format_func=lambda i: f"{addresses[i].get('roadAddrPart1', '')} · {addresses[i].get('bdNm') or '건물명 없음'} | 지번 {addresses[i].get('jibunAddr', '')}")
-    if st.button('층별 면적 조회', type='primary', use_container_width=True):
+    if st.button('건축물대장 조회', type='primary', use_container_width=True):
         if not bld_key:
-            st.error('먼저 건축HUB API 인증키를 입력해주세요.')
+            st.error('건축HUB API 인증키가 필요합니다.')
         else:
             st.session_state['picked'] = addresses[picked]
             st.session_state.pop('results', None)
