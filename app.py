@@ -368,7 +368,7 @@ if results:
         a,b = st.columns(2)
         a.metric('조회된 층·동 조합', f'{len(grouped)}개')
         b.metric('최대 층별 면적', f'{biggest:,.1f}평')
-        shown = grouped
+        shown = [{k: v for k, v in row.items() if k != '건물'} for row in grouped]
         st.dataframe(shown, use_container_width=True, hide_index=True, column_config={
             '면적 (㎡)': st.column_config.NumberColumn(format='%.2f'),
             '면적 (평)': st.column_config.NumberColumn(format='%.1f')})
