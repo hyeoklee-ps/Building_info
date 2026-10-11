@@ -217,9 +217,9 @@ def place_floor(place):
     texts = [str(place.get(k) or '') for k in
              ('road_address_name', 'address_name', 'place_name')]
     for source in texts:
-        match = re.search(r'(?<!\\d)(지하\\s*\\d+|B\\s*\\d+|\\d+)\\s*층(?!\\d)', source, re.I)
+        match = re.search(r'(?<!\d)(지하\s*\d+|B\s*\d+|\d+)\s*층(?!\d)', source, re.I)
         if match:
-            return re.sub(r'\\s+', '', match.group(0))
+            return re.sub(r'\s+', '', match.group(0))
     return '층수 미확인'
 
 
