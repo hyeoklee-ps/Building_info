@@ -134,6 +134,31 @@ def area_summary(rows):
             for k, v in grouped.items() if v['exclusive'] or v['common']]
 
 
+
+def field(row, *keys):
+    for key in keys:
+        value = row.get(key)
+        if value is not None and str(value).strip():
+            return value
+    return None
+
+def parking_details(row):
+    fields = [('옥내 자주식','indrAutoUtcnt'),('옥외 자주식','oudrAutoUtcnt'),
+              ('옥내 기계식','indrMechUtcnt'),('옥외 기계식','oudrMechUtcnt')]
+    output = []
+    for label, key in fields:
+        value = field(row, key)
+        try:
+            count = int(float(value)) if value is not None else None
+        except (ValueError, TypeError):
+            count = None
+        output.append({'구분':label,'대수':count})
+    total = sum(x['대수'] for x in output if x['대수'] is not None)
+    return output, total if any(x['대수'] is not None for x in output) else None
+
+def display_rows(rows, fields):
+    return [{name: str(field(row,*keys) or '-') for name,keys in fields.items()} for row in rows]
+
 st.set_page_config(page_title='건물 층별 면적 조회', page_icon='🏢', layout='wide')
 st.markdown('''<style>.block-container{max-width:1100px;padding-top:2rem} h1{letter-spacing:-1px}
 [data-testid="stMetricValue"]{font-size:1.8rem}</style>''', unsafe_allow_html=True)
@@ -185,7 +210,20 @@ if addresses:
                         ownership = building_info('getBrExposPubuseAreaInfo', code, bld_key)
                     except Exception:
                         ownership = []
-                    st.session_state['results'] = {'floors': floors, 'titles': titles, 'ownership': ownership, 'code': code}
+                    extra = {}
+                    for name, endpoint in [
+                        ('recap','getBrRecapTitleInfo'),
+                        ('units','getBrExposInfo'),
+                        ('zones','getBrJijiguInfo'),
+                        ('prices','getBrHsprcInfo'),
+                    ]:
+                        try:
+                            extra[name] = building_info(endpoint, code, bld_key)
+                        except Exception as exc:
+                            extra[name] = []
+                            st.warning(f'{name} 조회 실패: {exc}')
+                    st.session_state['results'] = {'floors': floors, 'titles': titles,
+                        'ownership': ownership, 'code': code, **extra}
             except Exception as exc:
                 st.error(str(exc))
 
@@ -213,15 +251,56 @@ if results:
         import pandas as pd
         st.download_button('CSV 저장', pd.DataFrame(shown).to_csv(index=False).encode('utf-8-sig'),
                            file_name='건물_층별면적.csv', mime='text/csv')
-    if results['titles']:
-        with st.expander('건물 표제부 정보'):
-            title_rows=[]
-            for t in results['titles']:
-                title_rows.append({'동명': t.get('dongNm') or '-', '주용도': t.get('mainPurpsCdNm') or '-',
-                                   '건축면적(㎡)': t.get('archArea') or '-', '연면적(㎡)': t.get('totArea') or '-',
-                                   '주차(옥내 자주식)': t.get('indrMechUtcnt') or t.get('indrAutoUtcnt') or '-',
-                                   '사용승인일': t.get('useAprDay') or '-'})
-            st.dataframe(title_rows, hide_index=True, use_container_width=True)
+    st.subheader('3. 병원 개원 관련 건물 분석')
+    for t in results.get('titles') or results.get('recap') or []:
+        with st.container(border=True):
+            st.markdown(f"**{field(t,'dongNm') or '건물'} · 건축물대장 표제부**")
+            parking, total = parking_details(t)
+            c1,c2,c3 = st.columns(3)
+            c1.metric('대장상 주차대수', f'{total}대' if total is not None else '미기재')
+            c2.metric('지상/지하 층수', f"{field(t,'grndFlrCnt') or '-'}/{field(t,'ugrndFlrCnt') or '-'}")
+            raw_date = str(field(t,'useAprDay') or '')
+            c3.metric('사용승인일', raw_date[:4]+'-'+raw_date[4:6]+'-'+raw_date[6:8] if len(raw_date)>=8 else '미기재')
+            st.write(f"**주용도:** {field(t,'mainPurpsCdNm') or '미기재'} · **구조:** {field(t,'strctCdNm') or '미기재'}")
+            st.write(f"**연면적:** {field(t,'totArea') or '미기재'}㎡ · **건축면적:** {field(t,'archArea') or '미기재'}㎡")
+            st.dataframe(parking, use_container_width=True, hide_index=True)
+    st.caption('주차대수는 대장상 설치대수이며, 방문객용 주차 가능 면수와 다릅니다. 여러 표제부 수치를 무조건 합산하지 마세요.')
+
+    with st.expander('개별 호실 및 전유부'):
+        rows = results.get('units',[])
+        if rows:
+            st.dataframe(display_rows(rows,{'동':('dongNm',),'층':('flrNo',),'호':('hoNm',),'용도':('mainPurpsCdNm','etcPurps'),'면적(㎡)':('area',)}),hide_index=True,use_container_width=True)
+        else:
+            st.info('전유부 데이터가 없습니다. 일반건축물일 수 있습니다.')
+
+    with st.expander('지역지구구역'):
+        rows = results.get('zones',[])
+        if rows:
+            st.dataframe(display_rows(rows,{'구분':('jijiguGbCdNm','jijiguGbCd'),'지역지구':('jijiguCdNm','etcJijigu')}),hide_index=True,use_container_width=True)
+        else:
+            st.info('지역지구구역 자료가 없습니다.')
+
+    with st.expander('주택가격 (주거용 자료에 한함)'):
+        rows = results.get('prices',[])
+        if rows:
+            st.dataframe(display_rows(rows,{'동':('dongNm',),'호':('hoNm',),'기준일':('stdDay','pblntfDay'),'가격 원자료':('hsprc','hsprcAmt','pblntfPc')}),hide_index=True,use_container_width=True)
+            if st.checkbox('주택가격 원본 필드 보기'):
+                st.json(rows)
+        else:
+            st.info('가격 정보가 없습니다. 상업용 건물은 해당 자료가 없을 수 있습니다.')
+        st.caption('주택가격은 상가의 시세나 임대료를 의미하지 않습니다.')
+
+    with st.expander('병원 개원 현장 체크리스트'):
+        for i,item in enumerate([
+            '실제 임대 가능 전용면적, 기둥과 공용부분 확인',
+            '자주식 주차 배정 및 무료주차 가능 여부',
+            '엘리베이터 및 환자·보호자 출입 동선',
+            '의원 용도 적합성, 소방·피난·장애인 편의시설',
+            '전력·급배수·수술실 설비 설치 가능성',
+            '간판, 임대료·관리비, 명도·인테리어 공사 일정']):
+            st.checkbox(item,key=f'check_{i}')
+        st.caption('해당 체크리스트는 현장 실사와 관할 기관 확인이 필요합니다.')
+
     summary=area_summary(results['ownership'])
     if summary:
         with st.expander('전유·공용면적 원자료 합계 (집합건축물 참고용)'):
