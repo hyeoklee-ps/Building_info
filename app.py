@@ -159,19 +159,30 @@ def parking_details(row):
 def display_rows(rows, fields):
     return [{name: str(field(row,*keys) or '-') for name,keys in fields.items()} for row in rows]
 
-st.set_page_config(page_title='건물 층별 면적 조회', page_icon='🏢', layout='wide')
+st.set_page_config(page_title='건축물대장 정보', page_icon='🏢', layout='wide')
 st.markdown('''<style>.block-container{max-width:1100px;padding-top:2rem} h1{letter-spacing:-1px}
 [data-testid="stMetricValue"]{font-size:1.8rem}</style>''', unsafe_allow_html=True)
-st.title('🏢 건물 층별 면적 조회')
-st.caption('주소 검색 → 건물 선택 → 층별 면적(㎡·평) 조회 | 휴대폰 지원')
+st.title('건축물대장 정보')
+st.caption('주소 검색 → 건물 선택 → 층별 면적·주차·건축물대장 정보 조회')
 
-st.info('📱 휴대폰에서도 사용 가능합니다. 최초 1회 웹 배포가 필요하며, 이 화면에서 API 키를 입력할 수 있습니다.')
-with st.expander('🔑 API 키 설정 (먼저 열어주세요)', expanded=True):
-    juso_key = st.text_input('도로명주소 검색 API 승인키', value=os.getenv('JUSO_API_KEY', ''), type='password', key='juso_key')
-    bld_key = st.text_input('건축HUB 건축물대장 API 일반 인증키', value=os.getenv('BUILDING_API_KEY', ''), type='password', key='bld_key')
-    st.caption('API 키는 앱 서버로 전달되어 조회에 이용됩니다. 공유된 앱이나 신뢰할 수 없는 서버에는 키를 입력하지 마세요.')
-    st.markdown('[주소 API 신청](https://business.juso.go.kr/addrlink/openApi/apiExprn.do)  ·  [건축HUB API 신청](https://www.data.go.kr/data/15134735/openapi.do)')
-threshold = st.number_input('관심 최소 면적 (평)', value=100, min_value=0, step=10)
+def saved_api_key(name):
+    try:
+        return str(st.secrets.get(name, '')).strip() or os.getenv(name, '')
+    except Exception:
+        return os.getenv(name, '')
+
+juso_key = saved_api_key('JUSO_API_KEY')
+bld_key = saved_api_key('BUILDING_API_KEY')
+if juso_key and bld_key:
+    st.caption('🔒 API 인증키: Streamlit 비공개 설정에서 불러왔습니다.')
+else:
+    with st.expander('🔑 API 키 설정 (Streamlit Cloud Secrets에 등록하면 자동 입력됩니다)', expanded=True):
+        if not juso_key:
+            juso_key = st.text_input('도로명주소 검색 API 승인키', type='password', key='juso_key')
+        if not bld_key:
+            bld_key = st.text_input('건축HUB 건축물대장 API 일반 인증키', type='password', key='bld_key')
+        st.caption('일시 입력한 키는 앱을 다시 열면 유지되지 않습니다. 영구 설정은 Streamlit Cloud 앱 Settings → Secrets에서 등록하세요.')
+        st.markdown('[주소 API](https://business.juso.go.kr/) · [건축HUB API](https://www.data.go.kr/data/15134735/openapi.do)')
 
 with st.form('address_search'):
     keyword = st.text_input('건물 주소', placeholder='예: 부산광역시 부산진구 중앙대로 708')
@@ -238,13 +249,10 @@ if results:
     else:
         grouped = sorted(grouped, key=lambda r: (r['건물'], floor_sort({'flrGbCdNm': r['층'], 'flrNo': re.search(r'\d+', r['층']).group() if re.search(r'\d+', r['층']) else '0'})))
         biggest = max(x['면적 (평)'] for x in grouped)
-        above = sum(x['면적 (평)'] >= threshold for x in grouped)
-        a,b,c = st.columns(3)
+        a,b = st.columns(2)
         a.metric('조회된 층·동 조합', f'{len(grouped)}개')
         b.metric('최대 층별 면적', f'{biggest:,.1f}평')
-        c.metric(f'{threshold}평 이상', f'{above}개')
-        option = st.checkbox(f'{threshold}평 이상만 보기')
-        shown = [x for x in grouped if x['면적 (평)'] >= threshold] if option else grouped
+        shown = grouped
         st.dataframe(shown, use_container_width=True, hide_index=True, column_config={
             '면적 (㎡)': st.column_config.NumberColumn(format='%.2f'),
             '면적 (평)': st.column_config.NumberColumn(format='%.1f')})
@@ -308,4 +316,4 @@ if results:
             st.caption('호실별·동별 정보가 혼합될 수 있고 층별개요 면적과 직접 대응하지 않을 수 있습니다. 임대하려는 특정 호실의 전유부는 원본 대장과 대조하세요.')
     st.info('**주의:** 위 ‘층별 면적’은 건축물대장 층별개요 면적을 합산한 값이지, 임차 가능한 전용면적이 아닙니다. 여러 동/호실, 용도별 면적이 기록될 수 있습니다. 실제 계약 면적은 건축물대장 원본, 도면, 임대인 자료로 검증해야 합니다.')
 else:
-    st.info('왼쪽에 API 키 2개를 설정한 다음 주소를 검색하세요. 실제 데이터는 키 설정 후 표시됩니다.')
+    st.info('주소를 입력해 건축물대장 정보를 조회하세요. API 키가 등록되지 않았다면 상단에서 설정해 주세요.')
