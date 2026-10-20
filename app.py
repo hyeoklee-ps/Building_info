@@ -5,6 +5,8 @@ from collections import defaultdict
 from decimal import Decimal, InvalidOperation
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import streamlit as st
 from dotenv import load_dotenv
 
@@ -42,15 +44,25 @@ def items_from_response(data):
 
 
 def api_json(url, params):
+    # 연결 실패와 일시적 5xx 응답만 제한적으로 재시도합니다.
+    session = requests.Session()
+    retries = Retry(total=2, connect=2, read=1, backoff_factor=0.7,
+                    status_forcelist=[502, 503, 504], allowed_methods=['GET'])
+    session.mount('https://', HTTPAdapter(max_retries=retries))
     try:
-        response = requests.get(url, params=params, timeout=20, headers={'User-Agent': 'BuildingAreaViewer/1.0'})
+        response = session.get(url, params=params, timeout=(8, 20),
+                               headers={'User-Agent': 'BuildingAreaViewer/1.0'})
         response.raise_for_status()
         return response.json()
-    except requests.RequestException as exc:
-        raise RuntimeError(f'외부 API 연결 실패: {exc}') from exc
-    except ValueError as exc:
-        raise RuntimeError('API가 JSON이 아닌 내용을 반환했습니다. 인증키 또는 서비스 주소를 확인해주세요.') from exc
-
+    except requests.Timeout:
+        raise RuntimeError('주소·건축물대장 API 서버 연결이 지연되고 있습니다. 잠시 뒤 다시 검색해주세요.') from None
+    except requests.RequestException:
+        # requests 예외의 URL에는 인증키가 포함될 수 있으므로 원문을 노출하지 않습니다.
+        raise RuntimeError('외부 API 연결에 실패했습니다. 서버 상태와 API 설정을 확인한 후 다시 시도해주세요.') from None
+    except ValueError:
+        raise RuntimeError('API가 JSON이 아닌 응답을 반환했습니다. 서비스 상태 또는 인증키를 확인해주세요.') from None
+    finally:
+        session.close()
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def search_address(keyword, key):
