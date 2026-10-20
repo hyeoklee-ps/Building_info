@@ -110,7 +110,7 @@ def normalized_kakao_address(doc, source):
     code = str(addr.get('b_code') or '')
     main = str(addr.get('main_address_no') or '')
     sub = str(addr.get('sub_address_no') or '0')
-    if not re.fullmatch(r'\\d{10}', code) or not main.isdigit() or not sub.isdigit():
+    if not re.fullmatch(r'\d{10}', code) or not main.isdigit() or not sub.isdigit():
         return None
     if len(main) > 4 or len(sub) > 4:
         return None
