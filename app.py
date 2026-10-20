@@ -97,6 +97,44 @@ def api_json_with_headers(url, params, headers):
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
+def kakao_address_lookup(query, key):
+    response = api_json_with_headers(
+        'https://dapi.kakao.com/v2/local/search/address.json',
+        {'query': query, 'analyze_type': 'exact', 'size': 10},
+        {'Authorization': 'KakaoAK ' + key.strip()})
+    return response.get('documents') or []
+
+
+def normalized_kakao_address(doc, source):
+    addr = doc.get('address') or {}
+    code = str(addr.get('b_code') or '')
+    main = str(addr.get('main_address_no') or '')
+    sub = str(addr.get('sub_address_no') or '0')
+    if not re.fullmatch(r'\\d{10}', code) or not main.isdigit() or not sub.isdigit():
+        return None
+    if len(main) > 4 or len(sub) > 4:
+        return None
+    road = doc.get('road_address') or {}
+    return {'admCd': code,
+            'mtYn': '1' if addr.get('mountain_yn') == 'Y' else '0',
+            'lnbrMnnm': main.zfill(4), 'lnbrSlno': sub.zfill(4),
+            'roadAddrPart1': road.get('address_name') or source,
+            'jibunAddr': addr.get('address_name') or source,
+            'bdNm': road.get('building_name') or ''}
+
+
+def matching_kakao_addresses(documents, source):
+    # 같은 지번의 중복 결과만 제거하고, 실제로 다른 지번이면 사용자가 고르도록 유지.
+    out = {}
+    for doc in documents:
+        item = normalized_kakao_address(doc, source)
+        if item:
+            key = (item['admCd'], item['mtYn'], item['lnbrMnnm'], item['lnbrSlno'])
+            out[key] = item
+    return list(out.values())
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
 def building_info(endpoint, code, key):
     params = {'serviceKey': normalize_key(key), 'sigunguCd': code['sigunguCd'],
               'bjdongCd': code['bjdongCd'], 'platGbCd': code['platGbCd'],
@@ -241,23 +279,35 @@ def place_label(place):
 
 
 def resolve_place(place):
-    if not juso_key:
-        st.error('도로명주소 API 키를 먼저 설정해주세요.')
-        return
-    target = place.get('road_address_name') or place.get('address_name') or ''
+    target = place.get('address_name') or place.get('road_address_name') or ''
     if not target:
-        st.warning('해당 장소에는 주소가 없습니다. 주소 검색을 이용하세요.')
+        st.warning('이 장소에는 지번 주소가 없습니다. 주소 검색을 이용하세요.')
+        return
+    # 우선 카카오가 제공하는 법정동코드와 지번을 사용해 외부 주소 API 장애를 우회.
+    if kakao_key:
+        try:
+            with st.spinner('카카오 주소 정보로 건축물 지번을 확인하고 있습니다…'):
+                found = matching_kakao_addresses(kakao_address_lookup(target, kakao_key), target)
+                if not found and place.get('road_address_name') and place['road_address_name'] != target:
+                    found = matching_kakao_addresses(
+                        kakao_address_lookup(place['road_address_name'], kakao_key), target)
+            if found:
+                st.session_state['addresses'] = found
+                return
+        except Exception:
+            st.warning('카카오 주소 변환이 일시적으로 실패하여 다른 경로를 시도합니다.')
+    if not juso_key:
+        st.error('건물 주소를 변환하지 못했습니다. 주소를 확인해 주세요.')
         return
     try:
-        with st.spinner('장소 주소를 건축물 주소로 변환하고 있습니다…'):
+        with st.spinner('도로명주소 서비스로 주소를 확인하고 있습니다…'):
             found = search_address(target, juso_key)
-            if not found and place.get('address_name') and place['address_name'] != target:
-                found = search_address(place['address_name'], juso_key)
         st.session_state['addresses'] = found
         if not found:
-            st.warning('건축물 주소로 연결되지 않았습니다. 주소 검색을 이용하세요.')
-    except Exception as exc:
-        st.error(str(exc))
+            st.warning('해당 주소에 대한 건축물 지번을 확인하지 못했습니다.')
+    except Exception:
+        st.error('주소 변환 서비스에 연결하지 못했습니다. 잠시 후 다시 시도해주세요.')
+
 
 
 def fetch_building(address):
