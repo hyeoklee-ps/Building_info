@@ -1,0 +1,10 @@
+{
+  "name": "건축물대장 정보",
+  "short_name": "건축물대장",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0e1117",
+  "theme_color": "#111827",
+  "description": "상호명이나 주소로 건축물 층별 면적과 주차 정보 조회"
+}
