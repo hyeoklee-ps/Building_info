@@ -104,8 +104,8 @@ export default {async fetch(request,env){
    if(!/^\d{5}$/.test(code.sigunguCd||'')||!/^\d{5}$/.test(code.bjdongCd||'')||
       !/^[01]$/.test(code.platGbCd||'')||!/^[0-9]{4}$/.test(code.bun||'')||
       !/^[0-9]{4}$/.test(code.ji||''))return fail('올바르지 않은 건축물 지번 코드입니다.',400,origin,env);
-   const floors=await hub(endpoints.floors,code,env);
-   const titles=await hub(endpoints.titles,code,env);
+   const [floors,titles]=await Promise.all([
+     hub(endpoints.floors,code,env),hub(endpoints.titles,code,env)]);
    // Optional sections are queried in parallel; noncritical failure is tolerated.
    const optional=await Promise.allSettled(
     ['ownership','recap','units','zones','prices'].map(k=>hub(endpoints[k],code,env)));
