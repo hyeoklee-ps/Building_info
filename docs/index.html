@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#111827"><title>건축물대장 정보</title><link rel="manifest" href="manifest.webmanifest">
+<style>
+:root{font-family:system-ui,-apple-system,"Noto Sans KR",sans-serif;color-scheme:dark;background:#0e1117;color:#eff2f7}
+*{box-sizing:border-box}body{margin:0}main{max-width:980px;margin:auto;padding:20px 16px 80px}
+h1{font-size:clamp(27px,7vw,42px);letter-spacing:-1px;margin:12px 0}h2{font-size:21px;margin:28px 0 14px}
+p,.muted{color:#a6afbd;line-height:1.5}small{color:#a6afbd}
+.panel{border:1px solid #303844;border-radius:15px;padding:16px;margin:14px 0;background:#151a23}
+label{display:block;font-size:14px;margin:10px 0 7px}input,select{width:100%;padding:13px;background:#1d2632;border:1px solid #475264;border-radius:9px;color:#fff;font-size:16px}
+button{cursor:pointer;border:0;border-radius:10px;background:#dc2626;color:white;padding:13px 16px;font-size:16px;font-weight:650}button.secondary{background:#303947}
+button:disabled{opacity:.5}button.full{width:100%;margin-top:12px}button.small{font-size:13px;padding:8px 11px}
+.flex{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.flex>*{flex:1}.toggle{display:inline-flex;align-items:center;gap:6px}
+.toggle input{width:auto}.metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.metric{border:1px solid #303844;border-radius:12px;padding:14px}.metric b{font-size:24px;display:block}
+.scroll{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:14px}td,th{padding:11px 9px;text-align:left;border-bottom:1px solid #343b46;white-space:nowrap}th{color:#a6afbd}td.num{text-align:right}
+#message{white-space:pre-wrap;color:#fca5a5}#status{color:#93c5fd;min-height:20px}.hide{display:none!important}
+details{margin-top:16px}summary{cursor:pointer;font-weight:600}a{color:#93c5fd}.tag{font-size:12px;border-radius:7px;background:#293446;padding:3px 7px}
+</style></head><body><main>
+<h1>건축물대장 정보</h1><p>상호명 또는 주소로 층별 면적·용도·주차정보 확인</p>
+<div class="panel">
+<details id="settings"><summary>⚙️ 최초 1회 서버 주소 설정</summary>
+<label for="api">Cloudflare Worker 주소 (API 키가 아닌 서버 주소)</label>
+<input id="api" placeholder="https://building-info-api.계정.workers.dev" autocomplete="off">
+<button class="secondary full" id="save">서버 주소 저장</button>
+<p><small>서버 URL만 이 기기에 저장됩니다. 실제 API 키는 Worker 비공개 Secrets에 보관합니다.</small></p>
+</details>
+<div class="flex"><label class="toggle"><input type="radio" name="mode" value="place" checked>상호명 검색</label><label class="toggle"><input type="radio" name="mode" value="address">주소 검색</label></div>
+<label for="q">상호명 또는 주소</label><input id="q" placeholder="예: 시스템성형외과" enterkeyhint="search">
+<button class="full" id="search">검색</button>
+</div>
+<div id="status" role="status"></div><p id="message" role="alert"></p>
+<section id="placesBox" class="panel hide"><h2>장소 선택</h2><select id="places"></select><button id="choosePlace" class="full">이 장소 선택</button></section>
+<section id="addressesBox" class="panel hide"><h2>건물 주소 선택</h2><select id="addresses"></select><button id="chooseAddress" class="full">건축물대장 조회</button></section>
+<section id="result" class="hide"><h2>조회 결과</h2><p id="selectedAddress"></p>
+<div class="metrics"><div class="metric">조회 층수<b id="floorCount">-</b></div><div class="metric">최대 층별 면적<b id="maxArea">-</b></div></div>
+<div class="panel scroll"><h2>층별 면적</h2><table><thead><tr><th>층</th><th>면적(㎡)</th><th>면적(평)</th><th>대장상 용도</th></tr></thead><tbody id="floors"></tbody></table></div>
+<details class="panel"><summary>건물 기본정보·주차</summary><div id="titles"></div></details>
+<details class="panel"><summary>전유·공용면적 (원자료)</summary><div id="ownership"></div></details>
+<details class="panel"><summary>지역지구구역</summary><div id="zones"></div></details>
+<details class="panel"><summary>주택가격 (주거용에 한함)</summary><div id="prices"></div></details>
+<details class="panel"><summary>원자료 확인</summary><pre id="raw" style="white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px"></pre></details>
+<p><small>면적은 건축물대장 기준이며 임차 가능 전용면적이 아닙니다. 등록 용도는 현재 영업 현황과 다를 수 있습니다. 대장상 주차대수는 고객 이용 가능 면수와 다릅니다.</small></p>
+</section>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const apiInput=$('api');apiInput.value=localStorage.getItem('building_worker_url')||'';
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let places=[],addresses=[],chosen=null,busy=false;
+function say(msg='',error=''){$('status').textContent=msg;$('message').textContent=error}
+function reset(){$('result').classList.add('hide');$('placesBox').classList.add('hide');$('addressesBox').classList.add('hide');places=[];addresses=[];chosen=null}
+$('save').onclick=()=>{let u=apiInput.value.trim().replace(/\/$/,'');if(!/^https:\/\/[a-z0-9.-]+(?::\d+)?$/i.test(u)){say('','https://로 시작하는 Worker 주소만 입력하세요.');return}localStorage.setItem('building_worker_url',u);apiInput.value=u;$('settings').open=false;say('서버 주소가 저장됐습니다.')};
+async function call(path,data){let base=localStorage.getItem('building_worker_url');if(!base){$('settings').open=true;throw Error('먼저 Cloudflare Worker 서버 주소를 설정하세요.')}const c=new AbortController();const timeout=setTimeout(()=>c.abort(),27000);try{const r=await fetch(base+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data),signal:c.signal});const json=await r.json();if(!r.ok||json.error)throw Error(json.error||'요청에 실패했습니다.');return json}catch(e){if(e.name==='AbortError')throw Error('서버 응답 시간이 초과되었습니다. 다시 시도해 주세요.');throw e}finally{clearTimeout(timeout)}}
+function locationText(p){return (p.place_name||'')+' · '+(p.road_address_name||p.address_name||'')+' · 층수 미확인'}
+function addressText(a){return (a.roadAddrPart1||a.jibunAddr||'')+' · 지번 '+(a.jibunAddr||'')}
+async function fetchBuilding(a){chosen=a;say('건축물대장 조회 중…');const info=await call('/building',{code:a.code});render(info);$('selectedAddress').textContent=addressText(a);say('조회 완료')}
+async function handleAddressList(rows){addresses=rows||[];if(!addresses.length)throw Error('건축물 주소를 확인할 수 없습니다. 다른 주소로 검색해 주세요.');if(addresses.length===1){await fetchBuilding(addresses[0]);return}
+$('addressesBox').classList.remove('hide');$('addresses').innerHTML=addresses.map((a,i)=>'<option value="'+i+'">'+esc(addressText(a))+'</option>').join('');say('건물 주소를 선택해 주세요.')}
+async function choosePlace(p){say('건물 주소 확인 중…');const result=await call('/resolve',{place:p});await handleAddressList(result.addresses)}
+async function search(){if(busy)return;busy=true;$('search').disabled=true;reset();say('검색 중…');try{const query=$('q').value.trim();if(query.length<2)throw Error('검색어를 2글자 이상 입력하세요.');const mode=document.querySelector('input[name="mode"]:checked').value;const result=await call(mode==='place'?'/place':'/address',{query});if(mode==='place'){places=result.places||[];if(!places.length)throw Error('상호명 검색 결과가 없습니다.');if(places.length===1)await choosePlace(places[0]);else{$('placesBox').classList.remove('hide');$('places').innerHTML=places.map((p,i)=>'<option value="'+i+'">'+esc(locationText(p))+'</option>').join('');say('장소를 선택해 주세요.')}}else await handleAddressList(result.addresses)}catch(e){say('',e.message)}finally{busy=false;$('search').disabled=false}}
+$('search').onclick=search;$('q').addEventListener('keydown',e=>{if(e.key==='Enter')search()});
+$('choosePlace').onclick=async()=>{try{$('placesBox').classList.add('hide');await choosePlace(places[Number($('places').value)])}catch(e){say('',e.message)}};
+$('chooseAddress').onclick=async()=>{try{$('addressesBox').classList.add('hide');await fetchBuilding(addresses[Number($('addresses').value)])}catch(e){say('',e.message)}};
+function n(v){const x=Number(v);return Number.isFinite(x)?x:0}
+function table(rows,columns){if(!rows?.length)return '<p>자료 없음</p>';return '<div class="scroll"><table><thead><tr>'+columns.map(x=>'<th>'+esc(x[0])+'</th>').join('')+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+columns.map(([_,key])=>'<td>'+esc(r[key]??'-')+'</td>').join('')+'</tr>').join('')+'</tbody></table></div>'}
+function render(data){
+const group=new Map();for(const r of data.floors||[]){const key=[r.mgmBldrgstPk||r.dongNm||'',r.flrGbCdNm||'',r.flrNo||''].join('|');if(!group.has(key))group.set(key,{floor:(r.flrGbCdNm||'')+' '+(r.flrNo||'')+'층',area:0,uses:new Set()});const v=group.get(key);v.area+=n(r.area);v.uses.add(r.mainPurpsCdNm||r.etcPurps||'미기재')}
+const floors=[...group.values()].sort((a,b)=>{const order=x=>x.floor.includes('지하')?-Number((x.floor.match(/\d+/)||['0'])[0]):Number((x.floor.match(/\d+/)||['0'])[0]);return order(a)-order(b)});
+$('floorCount').textContent=floors.length+'개';$('maxArea').textContent=(Math.max(0,...floors.map(x=>x.area))/3.305785).toFixed(1)+'평';
+$('floors').innerHTML=floors.map(f=>'<tr><td>'+esc(f.floor)+'</td><td class="num">'+f.area.toFixed(2)+'</td><td class="num">'+(f.area/3.305785).toFixed(1)+'</td><td>'+esc([...f.uses].join(' · '))+'</td></tr>').join('')||'<tr><td colspan="4">층별개요 자료가 없습니다.</td></tr>';
+$('titles').innerHTML=(data.titles||[]).map(t=>'<div class="panel"><b>'+esc(t.dongNm||'건물')+'</b><p>주용도: '+esc(t.mainPurpsCdNm||'-')+'<br>사용승인일: '+esc(t.useAprDay||'-')+'<br>연면적: '+esc(t.totArea||'-')+'㎡<br>지상/지하: '+esc(t.grndFlrCnt||'-')+'/'+esc(t.ugrndFlrCnt||'-')+'층</p>'+table([{a:'옥내 자주식',n:t.indrAutoUtcnt},{a:'옥외 자주식',n:t.oudrAutoUtcnt},{a:'옥내 기계식',n:t.indrMechUtcnt},{a:'옥외 기계식',n:t.oudrMechUtcnt}],[['주차 방식','a'],['대수','n']])+'</div>').join('')||'<p>자료 없음</p>';
+$('ownership').innerHTML=table(data.ownership,[['동','dongNm'],['층','flrNo'],['구분','exposPubuseGbCdNm'],['면적(㎡)','area']]);
+$('zones').innerHTML=table(data.zones,[['구분','jijiguGbCdNm'],['지역지구구역','jijiguCdNm']]);
+$('prices').innerHTML=table(data.prices,[['동','dongNm'],['호','hoNm'],['주택가격 원자료','hsprc']]);
+$('raw').textContent=JSON.stringify(data,null,2);$('result').classList.remove('hide');
+}
+</script></body></html>
