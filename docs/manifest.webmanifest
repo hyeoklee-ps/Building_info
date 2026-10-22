@@ -1,15 +1,15 @@
 {
-  "id": "/Building_info/",
+  "id": "./",
   "name": "건축물대장 정보",
   "short_name": "건축물대장",
-  "start_url": "/Building_info/",
-  "scope": "/Building_info/",
+  "start_url": "./",
+  "scope": "./",
   "display": "standalone",
   "background_color": "#0e1117",
   "theme_color": "#132437",
   "icons": [
     {
-      "src": "/Building_info/icon.svg",
+      "src": "icon.svg",
       "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "any maskable"
